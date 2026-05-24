@@ -18,4 +18,4 @@ pub(crate) mod metrics;
 mod metrics_exporter;
 pub(crate) mod traces;
 
-pub(crate) use config::{OtlpExporterConfig, OtlpProtocol, quickwit_resource};
+pub(crate) use config::OtlpExporterConfig;

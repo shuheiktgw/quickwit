@@ -17,9 +17,10 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use opentelemetry::global;
 use opentelemetry::trace::TracerProvider;
+use opentelemetry::{KeyValue, global};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider as SdkMetricsProvider;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
@@ -39,6 +40,16 @@ pub type EnvFilterReloadFn = Arc<dyn Fn(&str) -> anyhow::Result<()> + Send + Syn
 
 pub fn do_nothing_env_filter_reload_fn() -> EnvFilterReloadFn {
     Arc::new(|_| Ok(()))
+}
+
+fn quickwit_resource(service_version: &str) -> Resource {
+    Resource::builder()
+        .with_service_name("quickwit")
+        .with_attribute(KeyValue::new(
+            "service.version",
+            service_version.to_string(),
+        ))
+        .build()
 }
 
 pub struct TelemetryHandle {
@@ -126,16 +137,15 @@ pub fn init_telemetry(
     registry: impl Subscriber + for<'span> LookupSpan<'span> + Send + Sync + 'static,
 ) -> anyhow::Result<TelemetryHandle> {
     let otlp_config = otlp::OtlpExporterConfig::load_from_env();
+    let resource = quickwit_resource(service_version);
 
-    let meter_provider = metrics::init_metrics_provider(service_version, &otlp_config)?;
+    let meter_provider = metrics::init_metrics_provider(&otlp_config, resource.clone())?;
 
     global::set_text_map_propagator(TraceContextPropagator::new());
 
     // Note on disabling ANSI characters: setting the ansi boolean on event format is insufficient.
     // It is thus set on layers, see https://github.com/tokio-rs/tracing/issues/1817
     let telemetry_handle = if otlp_config.is_enabled() {
-        let resource = otlp::quickwit_resource(service_version);
-
         let tracer_provider = otlp::traces::init_tracer_provider(&otlp_config, resource.clone())?;
         let logger_provider = otlp::logs::init_logger_provider(&otlp_config, resource)?;
 
@@ -176,7 +186,8 @@ pub fn init_telemetry(
 /// Quickwit still needs to install its metrics recorder.
 pub fn init_meter_provider_only(service_version: &str) -> anyhow::Result<TelemetryHandle> {
     let otlp_config = otlp::OtlpExporterConfig::load_from_env();
-    let meter_provider = metrics::init_metrics_provider(service_version, &otlp_config)?;
+    let resource = quickwit_resource(service_version);
+    let meter_provider = metrics::init_metrics_provider(&otlp_config, resource)?;
     Ok(TelemetryHandle {
         tracer_provider: None,
         logger_provider: None,

@@ -13,35 +13,23 @@
 // limitations under the License.
 
 use anyhow::Context;
-use opentelemetry_otlp::{Protocol as OtlpWireProtocol, SpanExporter, WithExportConfig};
+use opentelemetry_otlp::{OTEL_EXPORTER_OTLP_TRACES_PROTOCOL, SpanExporter};
 use opentelemetry_sdk::trace::{BatchConfigBuilder, SdkTracerProvider};
 use opentelemetry_sdk::{Resource, trace};
 
-use crate::otlp::{OtlpExporterConfig, OtlpProtocol};
-
-impl OtlpProtocol {
-    pub(crate) fn span_exporter(&self) -> anyhow::Result<SpanExporter> {
-        match self {
-            OtlpProtocol::Grpc => SpanExporter::builder().with_tonic().build(),
-            OtlpProtocol::HttpProtobuf => SpanExporter::builder()
-                .with_http()
-                .with_protocol(OtlpWireProtocol::HttpBinary)
-                .build(),
-            OtlpProtocol::HttpJson => SpanExporter::builder()
-                .with_http()
-                .with_protocol(OtlpWireProtocol::HttpJson)
-                .build(),
-        }
-        .context("failed to initialize OTLP traces exporter")
-    }
-}
+use crate::otlp::OtlpExporterConfig;
 
 pub(crate) fn init_tracer_provider(
     otlp_config: &OtlpExporterConfig,
     resource: Resource,
 ) -> anyhow::Result<SdkTracerProvider> {
-    let traces_protocol = otlp_config.traces_protocol()?;
-    let span_exporter = traces_protocol.span_exporter()?;
+    let span_exporter =
+        if otlp_config.protocol_env_var_is_set(OTEL_EXPORTER_OTLP_TRACES_PROTOCOL) {
+            SpanExporter::builder().build()
+        } else {
+            SpanExporter::builder().with_tonic().build()
+        }
+        .context("failed to initialize OTLP traces exporter")?;
     let span_processor = trace::BatchSpanProcessor::builder(span_exporter)
         .with_batch_config(
             BatchConfigBuilder::default()
