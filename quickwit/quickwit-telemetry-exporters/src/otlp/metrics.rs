@@ -14,46 +14,26 @@
 
 use anyhow::Context;
 use opentelemetry::metrics::MeterProvider;
-use opentelemetry_otlp::{MetricExporter, Protocol as OtlpWireProtocol, WithExportConfig};
-use opentelemetry_sdk::metrics::{SdkMeterProvider, Temporality};
+use opentelemetry_otlp::{MetricExporter, OTEL_EXPORTER_OTLP_METRICS_PROTOCOL};
+use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 
 use super::metrics_exporter::OtlpMetricsRecorder;
-use crate::otlp::{OtlpExporterConfig, OtlpProtocol, quickwit_resource};
-
-impl OtlpProtocol {
-    pub(crate) fn metric_exporter(
-        &self,
-        temporality: Temporality,
-    ) -> anyhow::Result<MetricExporter> {
-        match self {
-            OtlpProtocol::Grpc => MetricExporter::builder()
-                .with_tonic()
-                .with_temporality(temporality)
-                .build(),
-            OtlpProtocol::HttpProtobuf => MetricExporter::builder()
-                .with_http()
-                .with_temporality(temporality)
-                .with_protocol(OtlpWireProtocol::HttpBinary)
-                .build(),
-            OtlpProtocol::HttpJson => MetricExporter::builder()
-                .with_http()
-                .with_temporality(temporality)
-                .with_protocol(OtlpWireProtocol::HttpJson)
-                .build(),
-        }
-        .context("failed to initialize OTLP metrics exporter")
-    }
-}
+use crate::otlp::OtlpExporterConfig;
 
 pub(crate) fn build_recorder(
-    service_version: &str,
     otlp_config: &OtlpExporterConfig,
+    resource: Resource,
 ) -> anyhow::Result<(OtlpMetricsRecorder, SdkMeterProvider)> {
-    let metrics_protocol = otlp_config.metrics_protocol()?;
-    let temporality = otlp_config.metrics_temporality()?;
-    let metric_exporter = metrics_protocol.metric_exporter(temporality)?;
+    let metric_exporter =
+        if otlp_config.protocol_env_var_is_set(OTEL_EXPORTER_OTLP_METRICS_PROTOCOL) {
+            MetricExporter::builder().build()
+        } else {
+            MetricExporter::builder().with_tonic().build()
+        }
+        .context("failed to initialize OTLP metrics exporter")?;
     let metrics_provider = SdkMeterProvider::builder()
-        .with_resource(quickwit_resource(service_version))
+        .with_resource(resource)
         .with_periodic_exporter(metric_exporter)
         .build();
     let meter = metrics_provider.meter("quickwit");

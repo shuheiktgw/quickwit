@@ -13,35 +13,22 @@
 // limitations under the License.
 
 use anyhow::Context;
-use opentelemetry_otlp::{LogExporter, Protocol as OtlpWireProtocol, WithExportConfig};
+use opentelemetry_otlp::{LogExporter, OTEL_EXPORTER_OTLP_LOGS_PROTOCOL};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 
-use crate::otlp::{OtlpExporterConfig, OtlpProtocol};
-
-impl OtlpProtocol {
-    pub(crate) fn log_exporter(&self) -> anyhow::Result<LogExporter> {
-        match self {
-            OtlpProtocol::Grpc => LogExporter::builder().with_tonic().build(),
-            OtlpProtocol::HttpProtobuf => LogExporter::builder()
-                .with_http()
-                .with_protocol(OtlpWireProtocol::HttpBinary)
-                .build(),
-            OtlpProtocol::HttpJson => LogExporter::builder()
-                .with_http()
-                .with_protocol(OtlpWireProtocol::HttpJson)
-                .build(),
-        }
-        .context("failed to initialize OTLP logs exporter")
-    }
-}
+use crate::otlp::OtlpExporterConfig;
 
 pub(crate) fn init_logger_provider(
     otlp_config: &OtlpExporterConfig,
     resource: Resource,
 ) -> anyhow::Result<SdkLoggerProvider> {
-    let logs_protocol = otlp_config.logs_protocol()?;
-    let log_exporter = logs_protocol.log_exporter()?;
+    let log_exporter = if otlp_config.protocol_env_var_is_set(OTEL_EXPORTER_OTLP_LOGS_PROTOCOL) {
+        LogExporter::builder().build()
+    } else {
+        LogExporter::builder().with_tonic().build()
+    }
+    .context("failed to initialize OTLP logs exporter")?;
     Ok(SdkLoggerProvider::builder()
         .with_resource(resource)
         .with_batch_exporter(log_exporter)

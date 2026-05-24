@@ -13,20 +13,21 @@
 // limitations under the License.
 
 use metrics_util::layers::FanoutBuilder;
+use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 
 use crate::otlp::OtlpExporterConfig;
 
 /// Sets up the global metrics recorder.
 pub(crate) fn init_metrics_provider(
-    service_version: &str,
     otlp_config: &OtlpExporterConfig,
+    resource: Resource,
 ) -> anyhow::Result<Option<SdkMeterProvider>> {
     let prometheus_recorder = crate::prometheus::metrics::build_recorder()?;
 
     let (recorder, meter_provider) = if otlp_config.is_enabled() {
         let (otlp_recorder, meter_provider) =
-            crate::otlp::metrics::build_recorder(service_version, otlp_config)?;
+            crate::otlp::metrics::build_recorder(otlp_config, resource)?;
         let recorder = FanoutBuilder::default()
             .add_recorder(prometheus_recorder)
             .add_recorder(otlp_recorder)
