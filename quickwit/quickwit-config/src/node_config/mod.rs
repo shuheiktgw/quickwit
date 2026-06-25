@@ -833,15 +833,26 @@ pub struct NodeConfig {
     pub jaeger_config: JaegerConfig,
 }
 
+/// Values supplied outside the config file and environment, applied before validation.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct NodeConfigOverrides {
+    pub enabled_services: Option<HashSet<QuickwitService>>,
+}
+
 impl NodeConfig {
     pub fn is_service_enabled(&self, service: QuickwitService) -> bool {
         self.enabled_services.contains(&service)
     }
 
     /// Parses and validates a [`NodeConfig`] from a given URI and config content.
-    pub async fn load(config_format: ConfigFormat, config_content: &[u8]) -> anyhow::Result<Self> {
+    pub async fn load(
+        config_format: ConfigFormat,
+        config_content: &[u8],
+        overrides: NodeConfigOverrides,
+    ) -> anyhow::Result<Self> {
         let env_vars = env::vars().collect::<HashMap<_, _>>();
-        let config = load_node_config_with_env(config_format, config_content, &env_vars).await?;
+        let config =
+            load_node_config_with_env(config_format, config_content, &env_vars, overrides).await?;
         if !config.data_dir_path.try_exists()? {
             bail!(
                 "data dir `{}` does not exist",

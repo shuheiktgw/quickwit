@@ -31,8 +31,8 @@ use quickwit_common::runtimes::RuntimesConfig;
 use quickwit_common::uri::Uri;
 use quickwit_config::service::QuickwitService;
 use quickwit_config::{
-    CLI_SOURCE_ID, IndexerConfig, NodeConfig, SourceConfig, SourceInputFormat, SourceParams,
-    TransformConfig, VecSourceParams,
+    CLI_SOURCE_ID, IndexerConfig, NodeConfig, NodeConfigOverrides, SourceConfig, SourceInputFormat,
+    SourceParams, TransformConfig, VecSourceParams,
 };
 use quickwit_index_management::{IndexService, clear_cache_directory};
 use quickwit_indexing::BoxedPipelineHandle;
@@ -400,7 +400,7 @@ pub async fn local_ingest_docs_cli(args: LocalIngestDocsArgs) -> anyhow::Result<
     debug!(args=?args, "local-ingest-docs");
     println!("❯ Ingesting documents locally...");
 
-    let config = load_node_config(&args.config_uri).await?;
+    let config = load_node_config(&args.config_uri, NodeConfigOverrides::default()).await?;
     let (storage_resolver, metastore_resolver) =
         get_resolvers(&config.storage_configs, &config.metastore_configs);
     let mut metastore = metastore_resolver.resolve(&config.metastore_uri).await?;
@@ -529,7 +529,7 @@ pub async fn local_ingest_docs_cli(args: LocalIngestDocsArgs) -> anyhow::Result<
 pub async fn local_search_cli(args: LocalSearchArgs) -> anyhow::Result<()> {
     debug!(args=?args, "local-search");
     println!("❯ Searching directly on the index storage (without calling REST API)...");
-    let config = load_node_config(&args.config_uri).await?;
+    let config = load_node_config(&args.config_uri, NodeConfigOverrides::default()).await?;
     let (storage_resolver, metastore_resolver) =
         get_resolvers(&config.storage_configs, &config.metastore_configs);
     let metastore: MetastoreServiceClient =
@@ -567,7 +567,7 @@ pub async fn local_search_cli(args: LocalSearchArgs) -> anyhow::Result<()> {
 pub async fn merge_cli(args: MergeArgs) -> anyhow::Result<()> {
     debug!(args=?args, "run-merge-operations");
     println!("❯ Merging splits locally...");
-    let config = load_node_config(&args.config_uri).await?;
+    let config = load_node_config(&args.config_uri, NodeConfigOverrides::default()).await?;
     let (storage_resolver, metastore_resolver) =
         get_resolvers(&config.storage_configs, &config.metastore_configs);
     let mut metastore = metastore_resolver.resolve(&config.metastore_uri).await?;
@@ -654,7 +654,7 @@ pub async fn garbage_collect_index_cli(args: GarbageCollectIndexArgs) -> anyhow:
     debug!(args=?args, "garbage-collect-index");
     println!("❯ Garbage collecting index...");
 
-    let config = load_node_config(&args.config_uri).await?;
+    let config = load_node_config(&args.config_uri, NodeConfigOverrides::default()).await?;
     let (storage_resolver, metastore_resolver) =
         get_resolvers(&config.storage_configs, &config.metastore_configs);
     let metastore = metastore_resolver.resolve(&config.metastore_uri).await?;
@@ -784,7 +784,7 @@ async fn extract_split_cli(args: ExtractSplitArgs) -> anyhow::Result<()> {
     debug!(args=?args, "extract-split");
     println!("❯ Extracting split...");
 
-    let config = load_node_config(&args.config_uri).await?;
+    let config = load_node_config(&args.config_uri, NodeConfigOverrides::default()).await?;
     let (storage_resolver, metastore_resolver) =
         get_resolvers(&config.storage_configs, &config.metastore_configs);
     let metastore = metastore_resolver.resolve(&config.metastore_uri).await?;

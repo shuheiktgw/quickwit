@@ -36,7 +36,7 @@ use crate::storage_config::StorageConfigs;
 use crate::templating::render_config;
 use crate::{
     ConfigFormat, IndexerConfig, IngestApiConfig, JaegerConfig, MetastoreConfigs, NodeConfig,
-    SearcherConfig, TlsConfig, validate_identifier, validate_node_id,
+    NodeConfigOverrides, SearcherConfig, TlsConfig, validate_identifier, validate_node_id,
 };
 
 pub const DEFAULT_CLUSTER_ID: &str = "quickwit-default-cluster";
@@ -143,12 +143,15 @@ pub async fn load_node_config_with_env(
     config_format: ConfigFormat,
     config_content: &[u8],
     env_vars: &HashMap<String, String>,
+    overrides: NodeConfigOverrides,
 ) -> anyhow::Result<NodeConfig> {
     let rendered_config_content = render_config(config_content)?;
     let versioned_node_config: VersionedNodeConfig =
         config_format.parse(rendered_config_content.as_bytes())?;
     let node_config_builder: NodeConfigBuilder = versioned_node_config.into();
-    let config = node_config_builder.build_and_validate(env_vars).await?;
+    let config = node_config_builder
+        .build_and_validate(env_vars, overrides)
+        .await?;
     Ok(config)
 }
 
@@ -231,6 +234,7 @@ impl NodeConfigBuilder {
     pub async fn build_and_validate(
         mut self,
         env_vars: &HashMap<String, String>,
+        overrides: NodeConfigOverrides,
     ) -> anyhow::Result<NodeConfig> {
         let node_id = self
             .node_id
@@ -238,13 +242,16 @@ impl NodeConfigBuilder {
             .map(|node_id_str| NodeId::from_str(&node_id_str))?;
         let availability_zone = self.availability_zone.resolve_optional(env_vars)?;
 
-        let enabled_services = self
-            .enabled_services
-            .resolve(env_vars)?
-            .0
-            .into_iter()
-            .map(|service| service.parse())
-            .collect::<Result<_, _>>()?;
+        let enabled_services = if let Some(enabled_services) = overrides.enabled_services {
+            enabled_services
+        } else {
+            self.enabled_services
+                .resolve(env_vars)?
+                .0
+                .into_iter()
+                .map(|service| service.parse())
+                .collect::<Result<_, _>>()?
+        };
 
         let listen_address = self.listen_address.resolve(env_vars)?;
         let listen_host = listen_address.parse::<Host>()?;
@@ -374,19 +381,21 @@ fn validate(node_config: &NodeConfig) -> anyhow::Result<()> {
 
 /// Validates the configuration of the [`QuickwitService::MetastoreReadReplica`] role.
 ///
-/// The [`QuickwitService::MetastoreReadReplica`] role serves the same gRPC service as
-/// [`QuickwitService::Metastore`], so the two cannot run on the same node, and the read-replica
-/// role requires `metastore_read_replica_uri` to connect to.
+/// The [`QuickwitService::MetastoreReadReplica`] role is a standalone role backed by
+/// `metastore_read_replica_uri`.
 fn validate_metastore_read_replica(node_config: &NodeConfig) -> anyhow::Result<()> {
-    let read_replica_enabled =
-        node_config.is_service_enabled(QuickwitService::MetastoreReadReplica);
-    if !read_replica_enabled {
+    if !node_config.is_service_enabled(QuickwitService::MetastoreReadReplica) {
         return Ok(());
     }
-    if node_config.is_service_enabled(QuickwitService::Metastore) {
+    // TODO: The read-replica role should be able to coexist with services other than a primary
+    // metastore instance if startup keeps separate primary/write and read-replica metastore
+    // connections. For now, the local metastore server connection is reused as the node's main
+    // metastore client, so combining this role with any other service can mix the read-only replica
+    // connection into write paths.
+    if node_config.enabled_services.len() > 1 {
         bail!(
-            "a node cannot run both the `metastore` and `metastore_read_replica` services: they \
-             expose the same gRPC service and must be deployed as separate nodes"
+            "the `metastore_read_replica` service must run as a standalone role and cannot be \
+             combined with other services"
         );
     }
     match &node_config.metastore_read_replica_uri {
@@ -620,6 +629,7 @@ pub fn node_config_for_tests_from_ports(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::env;
     use std::net::Ipv4Addr;
     use std::num::{NonZeroU64, NonZeroUsize};
@@ -631,6 +641,20 @@ mod tests {
     use super::*;
     use crate::storage_config::StorageBackendFlavor;
     use crate::{CacheConfig, LambdaConfig, LambdaDeployConfig};
+
+    async fn load_node_config_with_env(
+        config_format: ConfigFormat,
+        config_content: &[u8],
+        env_vars: &HashMap<String, String>,
+    ) -> anyhow::Result<NodeConfig> {
+        super::load_node_config_with_env(
+            config_format,
+            config_content,
+            env_vars,
+            NodeConfigOverrides::default(),
+        )
+        .await
+    }
 
     fn get_config_filepath(config_filename: &str) -> String {
         format!(
@@ -844,6 +868,7 @@ mod tests {
             ConfigFormat::Yaml,
             config_str.as_bytes(),
             &Default::default(),
+            NodeConfigOverrides::default(),
         )
         .await
         .unwrap_err();
@@ -1122,6 +1147,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_metastore_read_replica_role_must_be_standalone() {
+        for other_service in [
+            QuickwitService::ControlPlane,
+            QuickwitService::Indexer,
+            QuickwitService::Searcher,
+            QuickwitService::Janitor,
+            QuickwitService::Metastore,
+        ] {
+            let config_yaml = format!(
+                r#"
+            version: 0.8
+            node_id: test-node
+            enabled_services:
+              - metastore_read_replica
+              - {}
+            metastore_read_replica_uri: postgres://user:pass@host:5432/db
+        "#,
+                other_service.as_str()
+            );
+            let error = load_node_config_with_env(
+                ConfigFormat::Yaml,
+                config_yaml.as_bytes(),
+                &Default::default(),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("must run as a standalone role"),
+                "expected standalone-role error for metastore_read_replica + {other_service}: \
+                 {error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_metastore_read_replica_role_must_be_standalone_with_service_override() {
+        let config_yaml = r#"
+            version: 0.8
+            node_id: test-node
+            metastore_read_replica_uri: postgres://user:pass@host:5432/db
+        "#;
+        let error = super::load_node_config_with_env(
+            ConfigFormat::Yaml,
+            config_yaml.as_bytes(),
+            &HashMap::new(),
+            NodeConfigOverrides {
+                enabled_services: Some(HashSet::from([
+                    QuickwitService::MetastoreReadReplica,
+                    QuickwitService::Searcher,
+                ])),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("must run as a standalone role"));
+    }
+
+    #[tokio::test]
     async fn test_metastore_and_read_replica_roles_are_mutually_exclusive() {
         let config_yaml = r#"
             version: 0.8
@@ -1138,7 +1221,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.to_string().contains("cannot run both"));
+        assert!(error.to_string().contains("must run as a standalone role"));
     }
 
     #[tokio::test]
@@ -1147,7 +1230,7 @@ mod tests {
             let node_config = NodeConfigBuilder {
                 ..Default::default()
             }
-            .build_and_validate(&HashMap::new())
+            .build_and_validate(&HashMap::new(), NodeConfigOverrides::default())
             .await
             .unwrap();
             assert!(node_config.peer_seed_addrs().await.unwrap().is_empty());
@@ -1167,7 +1250,7 @@ mod tests {
                 ])),
                 ..Default::default()
             }
-            .build_and_validate(&HashMap::new())
+            .build_and_validate(&HashMap::new(), NodeConfigOverrides::default())
             .await
             .unwrap();
             assert_eq!(
@@ -1190,7 +1273,7 @@ mod tests {
                 listen_address: default_listen_address(),
                 ..Default::default()
             }
-            .build_and_validate(&HashMap::new())
+            .build_and_validate(&HashMap::new(), NodeConfigOverrides::default())
             .await
             .unwrap();
             assert_eq!(
@@ -1209,7 +1292,7 @@ mod tests {
                 },
                 ..Default::default()
             }
-            .build_and_validate(&HashMap::new())
+            .build_and_validate(&HashMap::new(), NodeConfigOverrides::default())
             .await
             .unwrap();
             assert_eq!(
@@ -1230,7 +1313,7 @@ mod tests {
                 },
                 ..Default::default()
             }
-            .build_and_validate(&HashMap::new())
+            .build_and_validate(&HashMap::new(), NodeConfigOverrides::default())
             .await
             .unwrap();
             assert_eq!(
@@ -1254,7 +1337,7 @@ mod tests {
             },
             ..Default::default()
         }
-        .build_and_validate(&HashMap::new())
+        .build_and_validate(&HashMap::new(), NodeConfigOverrides::default())
         .await
         .unwrap();
         assert_eq!(
@@ -1269,9 +1352,13 @@ mod tests {
     async fn test_load_config_with_validation_error() {
         let config_filepath = get_config_filepath("quickwit.yaml");
         let file = std::fs::read_to_string(&config_filepath).unwrap();
-        let error = NodeConfig::load(ConfigFormat::Yaml, file.as_bytes())
-            .await
-            .unwrap_err();
+        let error = NodeConfig::load(
+            ConfigFormat::Yaml,
+            file.as_bytes(),
+            NodeConfigOverrides::default(),
+        )
+        .await
+        .unwrap_err();
         assert!(error.to_string().contains("data dir"));
     }
 
