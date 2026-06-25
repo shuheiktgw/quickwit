@@ -614,6 +614,7 @@ fn flatten_json(value: JsonValue) -> Vec<(String, JsonValue)> {
         }
         acc.push((root, value))
     }
+    acc.sort_by(|left, right| left.0.cmp(&right.0));
     acc
 }
 

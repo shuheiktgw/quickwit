@@ -22,6 +22,7 @@ use futures::future::select;
 use itertools::Itertools;
 use quickwit_common::runtimes::RuntimesConfig;
 use quickwit_common::uri::Uri;
+use quickwit_config::NodeConfigOverrides;
 use quickwit_config::service::QuickwitService;
 use quickwit_serve::tcp_listener::DefaultTcpListenerResolver;
 use quickwit_serve::{BuildInfo, EnvFilterReloadFn, reload_tls_cert, serve_quickwit};
@@ -117,14 +118,19 @@ impl RunCliCommand {
         debug!(args = ?self, "run-service");
         let version_text = BuildInfo::get_version_text();
         info!("quickwit version: {version_text}");
-        let mut node_config = load_node_config(&self.config_uri).await?;
+        let node_config = load_node_config(
+            &self.config_uri,
+            NodeConfigOverrides {
+                enabled_services: self.services.clone(),
+            },
+        )
+        .await?;
         let (storage_resolver, metastore_resolver) =
             get_resolvers(&node_config.storage_configs, &node_config.metastore_configs);
         crate::busy_detector::set_enabled(true);
 
         if let Some(services) = &self.services {
             info!(services = %services.iter().join(", "), "setting services from override");
-            node_config.enabled_services.clone_from(services);
         }
         // TODO move in serve quickwit?
         let runtimes_config = RuntimesConfig::default();
